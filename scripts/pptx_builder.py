@@ -8,9 +8,10 @@
     import os, sys; sys.path.insert(0, "<이 스킬>/scripts")
     from pptx_builder import Deck
     deck = Deck("(주)에이아이랩스")
-    deck.cover("외부 협업 파일의 수명·권한 통제 체계", "기업 드라이브 전환 제안", "2026년 10월 29일",
-               "CLOUDIKE Inc.", contact="영업팀 하정우", recipient="김철수 팀장님")
-    s = deck.slide("한 장 요약", kicker="00 · SUMMARY")
+    deck.cover("외부 협업 파일 보안 공유 체계 구축 제안서", "기업 드라이브 전환 — 링크 정책·접근 이력·10TB 이관",
+               "2026년 10월 29일", "CLOUDIKE Inc.", contact="영업팀 하정우")
+    deck.toc()                                   # 2쪽: 제안 목차 (장 제목 + 쪽번호 자동)
+    s = deck.slide("제안 배경 및 필요성", kicker="01 · BACKGROUND", section="제안 배경 및 필요성")
     s.callout("핵심 제안 명제 …")
     s.stats([("150계정 · 10TB", "도입 규모"), ("12월 초", "계약"), ("[견적 협의]", "첫해 금액")])
     s.cards([("외부 링크 정책", "만료일·비밀번호 필수", "기본 제공")], cols=2)
@@ -75,17 +76,109 @@ def _em(ch):
     return 0.56
 
 
-def est_lines(text, width_in, size):
-    """폭 width_in(인치)에서 size pt 텍스트의 줄 수 추정 (보수적)."""
+# ---------- 실제 폰트 폭 측정
+# PowerPoint 는 한글을 글자 단위로 줄바꿈한다(「단/위」). 그래서 빌더가 폰트 파일로 글자 폭을 재서
+# 단어 경계에서 직접 줄을 나누고(<a:br/>), 같은 계산으로 상자 높이를 정한다.
+# 폰트 파일을 못 찾으면 어림값으로 높이만 추정하고 줄바꿈은 PowerPoint 에 맡긴다.
+FONT = {"name": "Pretendard"}          # Deck 이 설정
+FIT = 0.95                             # 우리가 나눈 줄을 PowerPoint 가 다시 쪼개지 않게 폭 여유
+_FONTS, _CWS = {}, {}
+_ALIAS = {"맑은 고딕": "malgun", "malgun gothic": "malgun", "나눔고딕": "nanumgothic"}
+
+
+def _font_file(name, bold):
+    key = _ALIAS.get(name.lower(), _ALIAS.get(name, name)).replace(" ", "").lower()
+    dirs = [os.path.join(os.environ.get("WINDIR", r"C:\Windows"), "Fonts"),
+            os.path.join(os.environ.get("LOCALAPPDATA", ""), "Microsoft", "Windows", "Fonts"),
+            "/Library/Fonts", os.path.expanduser("~/Library/Fonts"), "/usr/share/fonts", os.path.expanduser("~/.fonts")]
+    files = []
+    for d in dirs:
+        if d and os.path.isdir(d):
+            for root, _, fs in os.walk(d):
+                files += [os.path.join(root, f) for f in fs
+                          if f.lower().endswith((".ttf", ".otf")) and key in f.lower().replace("-", "").replace(" ", "")]
+    if not files:
+        return None
+
+    def score(f):
+        n = os.path.basename(f).lower()
+        is_bold = (re.search(r"bold", n) and not re.search(r"extrabold|semibold", n)) or n.endswith("bd.ttf")
+        if bold:
+            return 0 if is_bold else (1 if "semibold" in n else 2)
+        return 0 if "regular" in n else (1 if not re.search(r"bold|light|thin|black|medium|bd\.ttf", n) else 2)
+    return sorted(files, key=score)[0]
+
+
+def _font(bold):
+    k = (FONT["name"], bold)
+    if k not in _FONTS:
+        try:
+            from PIL import ImageFont
+            path = _font_file(FONT["name"], bold)
+            _FONTS[k] = ImageFont.truetype(path, 100) if path else None
+        except Exception:
+            _FONTS[k] = None
+    return _FONTS[k]
+
+
+def _cw(ch, bold):
+    """글자 폭 (em)."""
+    k = (ch, bold, FONT["name"])
+    if k not in _CWS:
+        f = _font(bold)
+        _CWS[k] = f.getlength(ch) / 100 if f else _em(ch) * (1.05 if bold else 1.0)
+    return _CWS[k]
+
+
+def wrap(text, width_in, size, bold=False):
+    """단어 경계 줄바꿈. 반환: 문단마다 [줄마다 [(글자, 굵기), ...]]. '**굵게**' 표기 처리."""
+    limit = max(0.5, width_in * 72 / size * FIT)
+    paras = []
+    for para in str(text).split("\n"):
+        chars = []
+        for j, seg in enumerate(para.split("**")):
+            chars += [(c, bold or j % 2 == 1) for c in seg]
+        toks, cur = [], []
+        for c in chars:
+            if c[0] == " ":
+                if cur: toks.append(cur); cur = []
+                toks.append([c])
+            else:
+                cur.append(c)
+        if cur: toks.append(cur)
+        lines, w = [[]], 0.0
+        for t in toks:
+            tw = sum(_cw(*c) for c in t)
+            if t[0][0] == " ":
+                if lines[-1]: lines[-1].append(t[0]); w += tw
+                continue
+            if w + tw > limit and lines[-1]:
+                while lines[-1] and lines[-1][-1][0] == " ": lines[-1].pop()
+                lines.append([]); w = 0.0
+            if tw > limit:                       # 한 단어가 한 줄보다 길면 글자 단위
+                for c in t:
+                    if w + _cw(*c) > limit and lines[-1]: lines.append([]); w = 0.0
+                    lines[-1].append(c); w += _cw(*c)
+            else:
+                lines[-1].extend(t); w += tw
+        while lines[-1] and lines[-1][-1][0] == " ": lines[-1].pop()
+        paras.append(lines)
+    return paras
+
+
+def est_lines(text, width_in, size, bold=False):
+    """폭 width_in(인치)에서 size pt 텍스트의 줄 수 — 폰트가 있으면 실측, 없으면 보수적 어림."""
+    if _font(False) is not None:
+        return sum(len(lines) for lines in wrap(text, width_in, size, bold))
     cap = max(1.0, width_in * 72 / size)
     n = 0
     for para in str(text).replace("**", "").split("\n"):
-        n += max(1, math.ceil(sum(_em(c) for c in para) * 1.04 / cap))
+        n += max(1, math.ceil(sum(_em(c) for c in para) * 1.12 / cap))
     return n
 
 
-def est_h(text, width_in, size, spacing=1.32):
-    return est_lines(text, width_in, size) * size * spacing / 72
+def est_h(text, width_in, size, spacing=1.32, bold=False):
+    return est_lines(text, width_in, size, bold) * size * spacing / 72
 
 
 def _shadow(shape, alpha=14):
@@ -107,13 +200,30 @@ class Slide:
             anchor=MSO_ANCHOR.TOP, spacing=1.32, margin=0.0, name=None):
         tb = self.s.shapes.add_textbox(Inches(x), Inches(y), Inches(w), Inches(h))
         if name: tb.name = name
-        self._fill(tb.text_frame, text, size, color, bold, align, anchor, spacing, margin)
+        self._fill(tb.text_frame, text, size, color, bold, align, anchor, spacing, margin, width=w - 2 * margin)
         return tb
 
-    def _fill(self, tf, text, size, color, bold, align, anchor, spacing=1.32, margin=0.0):
+    def _run(self, p, txt, size, bold, color):
+        r = p.add_run(); r.text = txt
+        r.font.size = Pt(size); r.font.bold = bold
+        r.font.color.rgb = _rgb(color); _ea(r, self.font)
+
+    def _fill(self, tf, text, size, color, bold, align, anchor, spacing=1.32, margin=0.0, width=None):
         tf.word_wrap = True; tf.vertical_anchor = anchor
         for side in ("left", "right", "top", "bottom"):
             setattr(tf, f"margin_{side}", Inches(margin))
+        if width and _font(False) is not None:      # 단어 단위 줄바꿈을 직접 넣는다
+            for i, lines in enumerate(wrap(text, width, size, bold)):
+                p = tf.paragraphs[0] if i == 0 else tf.add_paragraph()
+                p.alignment = align; p.line_spacing = spacing
+                for li, line in enumerate(lines):
+                    if li: p.add_line_break()
+                    k = 0
+                    while k < len(line):
+                        b = line[k][1]; j = k
+                        while j < len(line) and line[j][1] == b: j += 1
+                        self._run(p, "".join(c for c, _ in line[k:j]), size, b, color); k = j
+            return
         for i, para in enumerate(str(text).split("\n")):
             p = tf.paragraphs[0] if i == 0 else tf.add_paragraph()
             p.alignment = align; p.line_spacing = spacing
@@ -161,14 +271,14 @@ class Slide:
         """슬라이드 안의 소제목 (앰버 점 + 굵은 텍스트)."""
         d = self.s.shapes.add_shape(MSO_SHAPE.OVAL, Inches(MX), Inches(self.y + 0.07), Inches(0.12), Inches(0.12))
         d.fill.solid(); d.fill.fore_color.rgb = _rgb(AMBER); d.line.fill.background(); d.shadow.inherit = False
-        h = est_h(t, CW - 0.25, size)
+        h = est_h(t, CW - 0.22, size, bold=True)
         self._tb(MX + 0.22, self.y, CW - 0.22, h, t, size, NAVY, True)
         self._advance(h, 0.12)
 
     def callout(self, t, size=13, fill=TINT, color=INK):
         """핵심 메시지 박스 — 앰버 틴트 둥근 사각형, 굵은 따옴표 아이콘."""
         pad = 0.26
-        h = est_h(t, CW - 2 * pad - 0.35, size, 1.4) + 2 * pad
+        h = est_h(t, CW - 2 * pad - 0.3, size, 1.4) + 2 * pad
         self._box(MX, self.y, CW, h, fill=fill, radius=0.08, name="callout")
         q = self._tb(MX + 0.16, self.y + 0.08, 0.4, 0.5, "“", 30, AMBER, True)
         self._tb(MX + pad + 0.3, self.y + pad, CW - 2 * pad - 0.3, h - 2 * pad, t, size, color, False, spacing=1.4)
@@ -177,14 +287,14 @@ class Slide:
     def stats(self, items, size=19):
         """큰 숫자 타일 (값, 라벨[, 보조]) 2~4개 가로 배치."""
         n = len(items); gap = 0.18; w = (CW - gap * (n - 1)) / n
-        h = max(est_h(it[0], w - 0.3, size, 1.15) for it in items) + 0.5 + \
+        h = max(est_h(it[0], w - 0.3, size, 1.15, bold=True) for it in items) + 0.5 + \
             max((est_h(it[2], w - 0.3, 9.5) if len(it) > 2 else 0) for it in items)
         for i, it in enumerate(items):
             x = MX + i * (w + gap)
             self._box(x, self.y, w, h, fill=NAVY if i == 0 else SOFT, radius=0.1, name=f"stat{i+1}")
             fg = WHITE if i == 0 else NAVY
             self._tb(x + 0.15, self.y + 0.14, w - 0.3, 0.22, it[1], 9.5, AMBER if i == 0 else GRAY, True)
-            vh = est_h(it[0], w - 0.3, size, 1.15)
+            vh = est_h(it[0], w - 0.3, size, 1.15, bold=True)
             self._tb(x + 0.15, self.y + 0.38, w - 0.3, vh, it[0], size, fg, True, spacing=1.15)
             if len(it) > 2:
                 self._tb(x + 0.15, self.y + 0.42 + vh, w - 0.3, h - vh - 0.5, it[2], 9.5, "D1D5DB" if i == 0 else GRAY)
@@ -197,7 +307,7 @@ class Slide:
         for row in rows:
             hs = []
             for it in row:
-                hh = est_h(it[0], w - 2 * pad, title_size, 1.2) + 0.08 + est_h(it[1], w - 2 * pad, size, 1.3)
+                hh = est_h(it[0], w - 2 * pad, title_size, 1.2, bold=True) + 0.08 + est_h(it[1], w - 2 * pad, size, 1.3)
                 if len(it) > 2 and it[2]: hh += 0.3
                 hs.append(hh + 2 * pad)
             h = max(hs)
@@ -207,7 +317,7 @@ class Slide:
                 yy = y + pad
                 if len(it) > 2 and it[2]:
                     self.badge(x + pad, yy, it[2]); yy += 0.3
-                th = est_h(it[0], w - 2 * pad, title_size, 1.2)
+                th = est_h(it[0], w - 2 * pad, title_size, 1.2, bold=True)
                 self._tb(x + pad, yy, w - 2 * pad, th, it[0], title_size, NAVY, True, spacing=1.2)
                 self._tb(x + pad, yy + th + 0.08, w - 2 * pad, h - (yy - y) - th - pad, it[1], size, INK, spacing=1.3)
             self._advance(h, gap if row is not rows[-1] else 0.22)
@@ -232,7 +342,8 @@ class Slide:
         nc = max(len(r) for r in rows); rows = [list(r) + [""] * (nc - len(r)) for r in rows]
         widths = widths or [1] * nc; tot = sum(widths); ws = [CW * w / tot for w in widths]
         pad = 0.07
-        hs = [max(est_h(c, ws[j] - 2 * pad, size, 1.22) for j, c in enumerate(r)) + 2 * pad + 0.02 for r in rows]
+        hs = [max(est_h(c, ws[j] - 2 * pad, size, 1.22, bold=header and i == 0) for j, c in enumerate(r)) + 2 * pad + 0.02
+              for i, r in enumerate(rows)]
         h = sum(hs)
         gt = self.s.shapes.add_table(len(rows), nc, Inches(MX), Inches(self.y), Inches(CW), Inches(h))
         gt.name = "table"
@@ -256,7 +367,8 @@ class Slide:
                 c.vertical_anchor = MSO_ANCHOR.MIDDLE
                 tf = c.text_frame; tf.text = ""
                 self._fill(tf, val, size, fg, bold,
-                           PP_ALIGN.CENTER if (hdr or j in center_cols) else PP_ALIGN.LEFT, MSO_ANCHOR.MIDDLE, 1.22)
+                           PP_ALIGN.CENTER if (hdr or j in center_cols) else PP_ALIGN.LEFT, MSO_ANCHOR.MIDDLE, 1.22,
+                           width=ws[j] - 2 * pad)
                 # 셀 테두리: 옅은 회색 가로선
                 tcPr = c._tc.get_or_add_tcPr()
                 for tag in ("a:lnL", "a:lnR", "a:lnT", "a:lnB"):
@@ -329,8 +441,12 @@ class Deck:
         self.p = Presentation()
         self.p.slide_width = Inches(W); self.p.slide_height = Inches(H)
         self.customer, self.font, self.logo = customer, font, logo
+        FONT["name"] = font
         self.footer = footer or f"{customer} 맞춤 제안서"
         self.over = {}; self.n = 0
+        self.sections = []      # [(장 제목, 시작 쪽)] — deck.slide(section=...) 로 기록, 목차에 쓰임
+        self._toc = None
+        self.issues = []        # 형식 규칙 위반 (표지 제목, 목차 누락 등)
 
     def _frame(self, s, cover=False):
         """모든 슬라이드 공통: 상단 우측 고객사명, 하단 우측 로고, 하단 좌측 쪽번호."""
@@ -344,7 +460,11 @@ class Deck:
             sl._tb(MX, H - 0.6, 4.2, 0.26, f"{self.n:02d}   {self.footer}", 8.5, GRAY, name="footer_page")
         return sl
 
-    def cover(self, title, subtitle, date, proposer, contact=None, recipient=None):
+    def cover(self, title, subtitle, date, proposer, contact=None):
+        """표지. title 은 반드시 'ㅇㅇㅇ 제안서' 형식 (예: '외부 협업 파일 보안 공유 체계 구축 제안서').
+        표지에 '○○ 귀중'·'수신:' 줄은 넣지 않는다 — 고객사명은 모든 슬라이드 상단 우측에 이미 있다."""
+        if not title.replace(" ", "").endswith("제안서"):
+            self.issues.append(f"표지 제목이 'ㅇㅇㅇ 제안서' 형식이 아님: {title!r}")
         self.n += 1
         s = self.p.slides.add_slide(self.p.slide_layouts[6])
         sl = self._frame(s, cover=True)
@@ -352,27 +472,53 @@ class Deck:
         o = s.shapes.add_shape(MSO_SHAPE.OVAL, Inches(W - 2.6), Inches(-1.6), Inches(4.2), Inches(4.2))
         o.fill.solid(); o.fill.fore_color.rgb = _rgb(TINT); o.line.fill.background(); o.shadow.inherit = False; o.name = "cover_motif"
         s.shapes._spTree.remove(o._element); s.shapes._spTree.insert(2, o._element)   # 맨 뒤로
-        sl._tb(MX, 2.6, CW, 0.35, f"{self.customer} 귀중", 15, GRAY, True)
-        if recipient: sl._tb(MX, 2.98, CW, 0.3, f"수신: {recipient}", 11, GRAY)
-        th = est_h(title, CW, 30, 1.2)
-        sl._tb(MX, 3.55, CW, th, title, 30, NAVY, True, spacing=1.2)
+        th = est_h(title, CW, 30, 1.2, bold=True)
+        sl._tb(MX, 3.3, CW, th, title, 30, NAVY, True, spacing=1.2, name="cover_title")
         sh = est_h(subtitle, CW, 14, 1.35)
-        sl._tb(MX, 3.7 + th, CW, sh, subtitle, 14, INK, spacing=1.35)
+        sl._tb(MX, 3.5 + th, CW, sh, subtitle, 14, INK, spacing=1.35, name="cover_subtitle")
         y = H - 2.45
         sl._tb(MX, y, CW, 0.3, date, 12, INK)
         sl._tb(MX, y + 0.36, CW, 0.32, proposer, 13.5, NAVY, True)
         if contact: sl._tb(MX, y + 0.74, CW, est_h(contact, CW, 10), contact, 10, GRAY)
         return sl
 
-    def slide(self, title, kicker=None, lead=None):
-        """본문 슬라이드: kicker(작은 앰버 라벨) + 제목 + (선택) 리드 문장."""
+    def toc(self, title="제안 목차", kicker="CONTENTS"):
+        """표지 다음 장에 둔다. 목차 행(장 번호·장 제목·쪽)은 save() 때 section 기록으로 채워진다."""
+        if self.n != 1:
+            self.issues.append("제안 목차는 표지 바로 다음(2쪽)에 와야 함")
+        self._toc = self.slide(title, kicker=kicker)
+        return self._toc
+
+    def _draw_toc(self):
+        sl = self._toc; n = len(self.sections)
+        if not n:
+            self.issues.append("목차에 넣을 section 이 없음 — deck.slide(..., section='제안 배경 및 필요성') 처럼 지정"); return
+        avail = BOTTOM - sl.y; gap = 0.12
+        h = min(0.62, (avail - gap * (n - 1)) / n)
+        num = 0
+        for i, (name, page) in enumerate(self.sections):
+            y = sl.y + i * (h + gap)
+            appendix = name.startswith("별첨") or name.lower().startswith("appendix")
+            if not appendix: num += 1
+            sl._box(MX, y, CW, h, fill=SOFT, radius=0.18, name=f"toc{i+1}")
+            sl._tb(MX + 0.2, y, 0.7, h, "별첨" if appendix else f"{num:02d}", 15 if not appendix else 12,
+                   AMBER_DK, True, anchor=MSO_ANCHOR.MIDDLE)
+            sl._tb(MX + 0.95, y, CW - 2.0, h, name.replace("별첨 — ", "").replace("별첨 ", "") if appendix else name,
+                   13.5, NAVY, True, anchor=MSO_ANCHOR.MIDDLE)
+            sl._tb(MX + CW - 1.0, y, 0.8, h, f"{page:02d}", 13, GRAY, True, align=PP_ALIGN.RIGHT, anchor=MSO_ANCHOR.MIDDLE)
+
+    def slide(self, title, kicker=None, lead=None, section=None):
+        """본문 슬라이드: kicker(작은 앰버 라벨) + 제목 + (선택) 리드 문장.
+        section: 이 슬라이드가 속한 장 제목(목차 항목). 장이 바뀌는 첫 슬라이드의 쪽번호가 목차에 들어간다."""
         self.n += 1
+        if section and (not self.sections or self.sections[-1][0] != section):
+            self.sections.append((section, self.n))
         s = self.p.slides.add_slide(self.p.slide_layouts[6])
         sl = self._frame(s)
         y = 0.72
         if kicker:
             sl._tb(MX, y, CW, 0.24, kicker, 9.5, AMBER_DK, True); y += 0.28
-        th = est_h(title, CW, 22, 1.18)
+        th = est_h(title, CW, 22, 1.18, bold=True)
         sl._tb(MX, y, CW, th, title, 22, NAVY, True, spacing=1.18, name="title"); y += th + 0.14
         if lead:
             lh = est_h(lead, CW, 11.5, 1.4)
@@ -381,12 +527,18 @@ class Deck:
         return sl
 
     def save(self, path):
+        if self._toc is not None:
+            self._draw_toc()
+        else:
+            self.issues.append("제안 목차 슬라이드 없음 — 표지 다음에 deck.toc()")
         self.p.save(path)
         try: sys.stdout.reconfigure(encoding="utf-8")
         except Exception: pass
+        for msg in self.issues:
+            print("WARNING", msg)
         for no, over in sorted(self.over.items()):
             print(f"WARNING slide {no}: 하단 여백을 {over:.2f}in 넘침 - 줄이거나 슬라이드를 나눌 것")
-        print(f"saved {path} ({self.n} slides, {len(self.over)} warnings)")
+        print(f"saved {path} ({self.n} slides, {len(self.over) + len(self.issues)} warnings)")
         return path
 
     @property
