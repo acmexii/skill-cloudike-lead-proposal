@@ -1,7 +1,7 @@
 # skill-cloudike-lead-proposal
 
 클라우다이크(Cloudike) 같은 기업용 클라우드 스토리지·파일공유 솔루션을 인바운드 리드에 제안하는
-**맞춤 사업 제안서(DOCX/PDF)** 를 만드는 Claude Code 스킬입니다.
+**세로형 PowerPoint 맞춤 제안서(PPTX + PDF)** 를 만드는 Claude Code 스킬입니다.
 **리드 관리 대장(xlsx)만 있어도** 제안서를 쓰고, 리드별 폴더에 녹취록·회의록·메일·메모·요구사항 문서가 있으면 찾아서 반영합니다.
 [skill-rnd-proposal](https://github.com/acmexii/skill-rnd-proposal) 의 원칙(요구사항 대비표 · 확인하지 못한 범위 · Stage-Gate · 측정 가능한 지표)을 영업 제안에 옮겼습니다.
 
@@ -47,10 +47,11 @@ Claude Code 에서 리드 대장이 있는 폴더를 열고 고객사를 지목�
 | `scripts/read_leads.py` | 리드 대장 xlsx/csv → JSON |
 | `scripts/find_lead_materials.py` | 리드 폴더·관련 파일 탐색, 유형 분류(녹취록·회의록·메일·RFP 등), 텍스트 추출 |
 | `scripts/quote.py` | 공개 요금 기반 요금제 추천·견적 (공개 범위 초과는 `[견적 협의]`) |
-| `scripts/docx_builder.py` | DOCX 빌더 (표지·콜아웃·쪽번호, 표 머리행 반복) |
-| `scripts/verify_docx.py` | DOCX → PDF → 페이지 PNG (MS Word 또는 LibreOffice + PyMuPDF) |
+| `scripts/pptx_builder.py` | 세로형 A4 PPTX 빌더 — 모든 슬라이드 상단 우측 고객사명, 하단 우측 로고, 카드·콜아웃·스탯·단계 블록 |
+| `scripts/render_check.py` | PPTX → PDF → 슬라이드 PNG (PowerPoint 또는 LibreOffice + PyMuPDF) |
+| `assets/cloudike_logo.png` | 클라우다이크 로고 |
 
-요구 패키지: `python-docx`, `openpyxl`, `pymupdf`, `pypdf` (pptx 자료가 있으면 `python-pptx`).
+요구 패키지: `python-pptx`, `openpyxl`, `pymupdf`, `pypdf`, `Pillow` (docx 자료를 읽으려면 `python-docx`). 폰트: Pretendard.
 
 ## 주의
 
